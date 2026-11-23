@@ -2,9 +2,9 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::{
     app::App,
-    loader::ObjLoader,
+    loader::{BrdfLoader, ObjLoader},
     math::Vec4,
-    scene::{Camera, Scene},
+    scene::{OrbitCamera, Scene},
 };
 
 mod app;
@@ -20,12 +20,10 @@ fn main() {
 
     let scene = Scene {
         faces,
-        camera: Camera {
-            position: Vec4::vec3(0.0, 1.0, -4.42),
-            forward: Vec4::vec3(0.0, 0.0, 1.0),
-            up: Vec4::vec3(0.0, 1.0, 0.0),
-            fov: 45.0,
-        },
+        orbit_camera: OrbitCamera::new(Vec4::vec3(0.0, 0.5, 0.0), 3.0, 45.0),
+        light: Vec4::vec3(0.0, 2.0, -0.4),
+        brdf_material: BrdfLoader::load_from_file("../BRDF/UTIA_BRDF_PG14_bin/m061_fabric094.bin")
+            .expect("Failed to load BRDF material"),
     };
 
     let mut app = App::new(scene);

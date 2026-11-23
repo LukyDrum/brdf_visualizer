@@ -46,6 +46,10 @@ impl Vec4 {
         self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
     }
 
+    pub fn raw_vec3(self) -> [f32; 3] {
+        [self.x, self.y, self.z]
+    }
+
     pub fn raw_vec4(self) -> [f32; 4] {
         [self.x, self.y, self.z, self.w]
     }

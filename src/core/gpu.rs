@@ -6,14 +6,22 @@ use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::{
     core::{CameraUniform, load_wgsl_shader},
-    scene::Scene,
+    math::Vec4,
+    scene::{Camera, Scene},
 };
 
 const COMPUTE_PIPELINE_OVERRIDE_CONSTANTS: [(&str, f64); 2] = [("wg_x", 8.0), ("wg_y", 8.0)];
+const TILE_STRIDE: u32 = 4;
 
 pub struct RendererState {
-    triangles_buffer: wgpu::Buffer,
-    camera: wgpu::Buffer,
+    camera: Camera,
+    light_position: Vec4,
+
+    rt_data_buffer: wgpu::Buffer,
+    camera_buffer: wgpu::Buffer,
+    faces_buffer: wgpu::Buffer,
+    accum_buffer: wgpu::Buffer,
+    brdf_buffer: wgpu::Buffer,
 }
 
 #[repr(C)]
@@ -22,6 +30,8 @@ struct RtDataUniform {
     resolution: [f32; 2],
     time: f32,
     frame: u32,
+    light_position: [f32; 3],
+    stride: u32,
 }
 
 pub struct GpuState {
@@ -36,7 +46,6 @@ pub struct GpuState {
     blit_pipeline: wgpu::RenderPipeline,
     blit_bgl: wgpu::BindGroupLayout,
     blit_bind_group: wgpu::BindGroup,
-    uniform_buffer: wgpu::Buffer,
     start_time: Instant,
     frame: u32,
 
@@ -69,29 +78,36 @@ impl GpuState {
             .expect("Surface unsupported by adapter");
         surface.configure(&device, &surface_config);
 
-        // Create uniform buffers
-        let rt_data_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let rt_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("RT Data Uniform Buffer"),
             contents: bytemuck::bytes_of(&RtDataUniform {
                 resolution: [surface_config.width as f32, surface_config.height as f32],
                 time: 0.0,
                 frame: 0,
+                light_position: scene.light.raw_vec3(),
+                stride: 1,
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let camera_uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Uniform Buffer"),
             contents: bytemuck::bytes_of(&CameraUniform::from_camera(
-                scene.camera,
+                scene.orbit_camera.camera(),
                 (surface_config.width, surface_config.height),
             )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Faces buffer
         let faces_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Faces Buffer"),
             contents: bytemuck::cast_slice(&scene.faces),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let brdf_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BRDF Buffer"),
+            contents: bytemuck::cast_slice(scene.brdf_material.raw_data()),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
@@ -138,6 +154,26 @@ impl GpuState {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -155,13 +191,14 @@ impl GpuState {
             }],
         });
 
-        let (compute_bind_group, blit_bind_group) = Self::create_target_resources(
+        let (accum_buffer, compute_bind_group, blit_bind_group) = Self::create_target_resources(
             &device,
             &compute_bgl,
             &blit_bgl,
-            &rt_data_uniform_buffer,
-            &camera_uniform_buffer,
+            &rt_data_buffer,
+            &camera_buffer,
             &faces_buffer,
+            &brdf_buffer,
             surface_config.width,
             surface_config.height,
         );
@@ -230,13 +267,18 @@ impl GpuState {
             blit_pipeline,
             blit_bgl,
             blit_bind_group,
-            uniform_buffer: rt_data_uniform_buffer,
             start_time: Instant::now(),
             frame: 0,
 
             renderer: RendererState {
-                triangles_buffer: faces_buffer,
-                camera: camera_uniform_buffer,
+                camera: scene.orbit_camera.camera(),
+                light_position: scene.light,
+
+                rt_data_buffer,
+                camera_buffer,
+                faces_buffer,
+                accum_buffer,
+                brdf_buffer,
             },
         }
     }
@@ -248,9 +290,17 @@ impl GpuState {
         rt_data_uniform_buffer: &wgpu::Buffer,
         camera_uniform_buffer: &wgpu::Buffer,
         triangles_buffer: &wgpu::Buffer,
+        brdf_buffer: &wgpu::Buffer,
         width: u32,
         height: u32,
-    ) -> (wgpu::BindGroup, wgpu::BindGroup) {
+    ) -> (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup) {
+        let accum_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Accumulation Buffer"),
+            size: (width as u64) * (height as u64) * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Raytrace Output"),
             size: wgpu::Extent3d {
@@ -287,6 +337,14 @@ impl GpuState {
                     binding: 3,
                     resource: triangles_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: accum_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: brdf_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -299,7 +357,7 @@ impl GpuState {
             }],
         });
 
-        (compute_bg, blit_bg)
+        (accum_buffer, compute_bg, blit_bg)
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -310,19 +368,32 @@ impl GpuState {
         self.surface_config.height = new_size.height;
         self.surface.configure(&self.device, &self.surface_config);
 
-        let (compute_bg, blit_bg) = Self::create_target_resources(
+        let (accum_buffer, compute_bg, blit_bg) = Self::create_target_resources(
             &self.device,
             &self.compute_bgl,
             &self.blit_bgl,
-            &self.uniform_buffer,
-            &self.renderer.camera,
-            &self.renderer.triangles_buffer,
+            &self.renderer.rt_data_buffer,
+            &self.renderer.camera_buffer,
+            &self.renderer.faces_buffer,
+            &self.renderer.brdf_buffer,
             new_size.width,
             new_size.height,
         );
+        self.renderer.accum_buffer = accum_buffer;
         self.compute_bind_group = compute_bg;
         self.blit_bind_group = blit_bg;
         self.frame = 0;
+    }
+
+    /// Call this whenever the camera moves so accumulation restarts cleanly.
+    pub fn reset_accumulation(&mut self) {
+        self.frame = 0;
+    }
+
+    pub fn update_from_scene(&mut self, scene: &Scene) {
+        self.renderer.camera = scene.orbit_camera.camera();
+        self.renderer.light_position = scene.light;
+        self.reset_accumulation();
     }
 
     pub fn render(&mut self) {
@@ -338,19 +409,38 @@ impl GpuState {
             | wgpu::CurrentSurfaceTexture::Validation => return,
         };
 
-        let uniforms = RtDataUniform {
+        let rt_data = RtDataUniform {
             resolution: [
                 self.surface_config.width as f32,
                 self.surface_config.height as f32,
             ],
             time: self.start_time.elapsed().as_secs_f32(),
             frame: self.frame,
+            light_position: self.renderer.light_position.raw_vec3(),
+            stride: TILE_STRIDE,
         };
-        self.queue
-            .write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let camera_uniform = CameraUniform::from_camera(
+            self.renderer.camera,
+            (self.surface_config.width, self.surface_config.height),
+        );
+
+        self.queue.write_buffer(
+            &self.renderer.rt_data_buffer,
+            0,
+            bytemuck::bytes_of(&rt_data),
+        );
+        self.queue.write_buffer(
+            &self.renderer.camera_buffer,
+            0,
+            bytemuck::bytes_of(&camera_uniform),
+        );
 
         let surface_view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
+
+        if self.frame == 0 {
+            encoder.clear_buffer(&self.renderer.accum_buffer, 0, None);
+        }
 
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -359,9 +449,18 @@ impl GpuState {
             });
             cpass.set_pipeline(&self.compute_pipeline);
             cpass.set_bind_group(0, &self.compute_bind_group, &[]);
+
+            let wg_x = COMPUTE_PIPELINE_OVERRIDE_CONSTANTS[0].1 as u32;
+            let wg_y = COMPUTE_PIPELINE_OVERRIDE_CONSTANTS[1].1 as u32;
             cpass.dispatch_workgroups(
-                self.surface_config.width.div_ceil(8),
-                self.surface_config.height.div_ceil(8),
+                self.surface_config
+                    .width
+                    .div_ceil(TILE_STRIDE)
+                    .div_ceil(wg_x),
+                self.surface_config
+                    .height
+                    .div_ceil(TILE_STRIDE)
+                    .div_ceil(wg_y),
                 1,
             );
         }

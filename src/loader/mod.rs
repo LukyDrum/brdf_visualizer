@@ -1,11 +1,13 @@
 //! Implementation of loaders for various file formats.
 //! Supported file formats have `*Loader` struct for loading from files/lines/etc.
 
+mod brdf_loader;
 mod error;
 mod obj_loader;
 
 use std::num::ParseFloatError;
 
+pub use brdf_loader::BrdfLoader;
 pub use error::LoaderError;
 pub use obj_loader::ObjLoader;
 

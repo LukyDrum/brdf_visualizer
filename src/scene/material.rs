@@ -1,4 +1,4 @@
-pub const UNNAMED: &str = "unnamed";
+pub const UNNAMED_MATERIAL: &str = "unnamed";
 
 #[derive(Clone, Debug)]
 pub struct Material {
@@ -10,7 +10,20 @@ pub struct Material {
 impl Default for Material {
     fn default() -> Self {
         Self {
-            name: UNNAMED.to_owned(),
+            name: UNNAMED_MATERIAL.to_owned(),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BrdfMaterial(Vec<f32>);
+
+impl BrdfMaterial {
+    pub fn new(data: Vec<f32>) -> Self {
+        Self(data)
+    }
+
+    pub fn raw_data(&self) -> &[f32] {
+        &self.0
     }
 }

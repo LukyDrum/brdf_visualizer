@@ -4,7 +4,7 @@ use crate::{
     either::Either,
     loader::{KeyArgs, LoaderError, map_float_parse_err},
     math::Vec4,
-    scene::{Face, Material, UNNAMED},
+    scene::{Face, Material, UNNAMED_MATERIAL},
 };
 
 const COMMENT_SIGN: char = '#';
@@ -72,7 +72,7 @@ impl ObjLoader {
                 MATERIAL_LIB_KEY => {
                     let mtl_file = args[0];
                     let mtl_file = base_path.join(mtl_file);
-                    materials = HashMap::from([(UNNAMED.to_owned(), Material::default())]);
+                    materials = HashMap::from([(UNNAMED_MATERIAL.to_owned(), Material::default())]);
                 }
                 USE_MATERIAL_KEY => {
                     used_material = args[0].to_owned();
