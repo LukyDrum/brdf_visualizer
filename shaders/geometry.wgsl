@@ -20,7 +20,12 @@ struct RayFaceHit {
 }
 
 const EPSILON = 0.000001;
-const NO_RAY_HIT = RayFaceHit(false, vec3<f32>(0.0, 0.0, 0.0), vec2<f32>(0.0, 0.0), 100000000000.0);
+const NO_RAY_HIT = RayFaceHit(
+    false,
+    vec3<f32>(0.0, 0.0, 0.0),
+    vec2<f32>(0.0, 0.0),
+    100000000000.0,
+);
 
 fn ray_face_hit(
     ray: Ray,
@@ -59,9 +64,20 @@ fn ray_face_hit(
         let intersection_point = ray.origin + ray.direction * t;
 
         return RayFaceHit(
-            true, intersection_point, vec2<f32>(u, v), abs(t),
+            true,
+            intersection_point,
+            vec2<f32>(u, v),
+            abs(t),
         );
     } else {
        return NO_RAY_HIT;
     }
+}
+
+fn interpolated_normal(face: Face, point_weights: vec2<f32>) -> vec3<f32> {
+    let u = point_weights.x;
+    let v = point_weights.y;
+    let w = 1.0 - u - v;
+
+    return normalize(face.n0.xyz * w + face.n1.xyz * u + face.n2.xyz * v);
 }

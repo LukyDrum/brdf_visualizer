@@ -2,29 +2,24 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 use crate::{
     app::App,
+    loader::ObjLoader,
     math::Vec4,
-    scene::{Camera, Face, Scene},
+    scene::{Camera, Scene},
 };
 
 mod app;
 mod core;
+mod either;
+mod loader;
 mod math;
 mod scene;
 
 fn main() {
+    let faces =
+        ObjLoader::load_from_file("../Scenes/Bunny/Bunny.obj").expect("Failed to load Scene file");
+
     let scene = Scene {
-        faces: vec![Face {
-            triangle: [
-                Vec4::vec3(2.0, -2.0, 10.0),
-                Vec4::vec3(-2.0, -2.0, 10.0),
-                Vec4::vec3(0.0, 2.0, 10.0),
-            ],
-            normals: [
-                Vec4::vec3(0.0, 0.0, -1.0),
-                Vec4::vec3(0.0, 0.0, -1.0),
-                Vec4::vec3(0.0, 0.0, -1.0),
-            ],
-        }],
+        faces,
         camera: Camera {
             position: Vec4::vec3(0.0, 1.0, -4.42),
             forward: Vec4::vec3(0.0, 0.0, 1.0),

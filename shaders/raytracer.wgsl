@@ -59,6 +59,9 @@ fn generate_ray(pixel: vec2<u32>, resolution: vec2<f32>) -> Ray {
     return Ray(camera.position.xyz, dir);
 }
 
+const NO_HIT_COLOR = vec3<f32>(0.0, 0.0, 0.0);
+const BACKFACE_CULLING = true;
+
 fn raytrace(ray: Ray) -> vec3<f32> {
     var closest_hit = NO_RAY_HIT;
     var closest_face_index = 1u;
@@ -69,14 +72,20 @@ fn raytrace(ray: Ray) -> vec3<f32> {
         let hit = ray_face_hit(ray, face);
 
         if hit.distance < closest_hit.distance {
-            closest_hit = hit;
-            closest_face_index = i;
+            let normal = interpolated_normal(face, hit.weights);
+            if dot(normal, ray.direction) < 0.0 || !BACKFACE_CULLING {
+                closest_hit = hit;
+                closest_face_index = i;
+            }
         }
     }
 
-    if closest_hit.is_hit {
-        return vec3<f32>(0.1, 1.0, 0.5);
+    // No hit
+    if !closest_hit.is_hit {
+        return NO_HIT_COLOR;
     }
 
-    return vec3<f32>(1.0, 0.2, 0.2);
+    let depth = clamp(closest_hit.point.z / 1.0, 0.0, 1.0);
+
+    return vec3<f32>(depth, depth, depth);
 }
