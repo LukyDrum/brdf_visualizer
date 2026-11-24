@@ -50,12 +50,12 @@ fn lookup_brdf_val(theta_i: f32, phi_i: f32, theta_v: f32, phi_v: f32) -> vec3<f
 
     let iti0 = min(u32(floor(ti_deg / BRDF_STEP_T)), BRDF_NTI - 2u);
     let iti1 = iti0 + 1u;
-    let t_ti = (ti_deg - f32(iti0) * BRDF_STEP_T) / BRDF_STEP_T;
+    let t_ti = clamp((ti_deg - f32(iti0) * BRDF_STEP_T) / BRDF_STEP_T, 0.0, 1.0);
     let wti = vec2<f32>(1.0 - t_ti, t_ti);
 
     let itv0 = min(u32(floor(tv_deg / BRDF_STEP_T)), BRDF_NTV - 2u);
     let itv1 = itv0 + 1u;
-    let t_tv = (tv_deg - f32(itv0) * BRDF_STEP_T) / BRDF_STEP_T;
+    let t_tv = clamp((tv_deg - f32(itv0) * BRDF_STEP_T) / BRDF_STEP_T, 0.0, 1.0);
     let wtv = vec2<f32>(1.0 - t_tv, t_tv);
 
     let ipi0 = u32(floor(pi_deg / BRDF_STEP_P)) % BRDF_NPI;
@@ -95,4 +95,20 @@ fn lookup_brdf_val(theta_i: f32, phi_i: f32, theta_v: f32, phi_v: f32) -> vec3<f
     }
 
     return max(rgb, vec3<f32>(0.0));
+}
+
+fn sample_cosine_hemisphere(u1: f32, u2: f32, frame: TangentFrame) -> vec3<f32> {
+    let r = sqrt(u1);
+    let phi = 2.0 * PI * u2;
+    let local_dir = vec3<f32>(
+        r * cos(phi),
+        r * sin(phi),
+        sqrt(max(0.0, 1.0 - u1))
+    );
+
+    return normalize(
+        frame.t * local_dir.x +
+        frame.b * local_dir.y +
+        frame.n * local_dir.z
+    );
 }

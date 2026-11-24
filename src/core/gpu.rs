@@ -11,7 +11,7 @@ use crate::{
 };
 
 const COMPUTE_PIPELINE_OVERRIDE_CONSTANTS: [(&str, f64); 2] = [("wg_x", 8.0), ("wg_y", 8.0)];
-const TILE_STRIDE: u32 = 4;
+const TILE_STRIDE: u32 = 2;
 
 pub struct RendererState {
     camera: Camera,

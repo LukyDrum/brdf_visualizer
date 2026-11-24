@@ -21,8 +21,8 @@ fn main() {
     let scene = Scene {
         faces,
         orbit_camera: OrbitCamera::new(Vec4::vec3(0.0, 0.5, 0.0), 3.0, 45.0),
-        light: Vec4::vec3(0.0, 2.0, -0.4),
-        brdf_material: BrdfLoader::load_from_file("../BRDF/UTIA_BRDF_PG14_bin/m061_fabric094.bin")
+        light: Vec4::vec3(2.0, 1.0, 0.5),
+        brdf_material: BrdfLoader::load_from_file("../BRDF/UTIA_BRDF_PG14_bin/m074_fabric111.bin")
             .expect("Failed to load BRDF material"),
     };
 
