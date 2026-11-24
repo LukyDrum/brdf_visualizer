@@ -27,16 +27,41 @@ struct Camera {
 override wg_x: u32 = 8u;
 override wg_y: u32 = 8u;
 
+const STRIDE_PATTERN_2 = array<u32, 4>(1, 2, 0, 3);
+const STRIDE_PATTERN_4 = array<u32, 16>(
+    0, 10, 2, 8,
+    5, 15, 7, 13,
+    1, 11, 3, 9,
+    4, 14, 6, 12,
+);
+
 @compute @workgroup_size(wg_x, wg_y, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = vec2<u32>(rt_data.resolution);
     let stride = rt_data.stride;
 
-    let tile_seed = init_rng(id.xy, rt_data.frame);
-    let offset = vec2<u32>(
-        pcg_hash(tile_seed) % stride,
-        pcg_hash(tile_seed ^ 0x9e3779b9u) % stride
-    );
+    let tile_hash = pcg_hash(id.x + pcg_hash(id.y));
+    let index_into_pattern = (rt_data.frame + tile_hash) % (stride * stride);
+
+    var offset: vec2<u32>;
+    if stride == 1 {
+        offset = vec2<u32>(0, 0);
+    }
+    else if stride == 2 {
+        let offset_index = STRIDE_PATTERN_2[index_into_pattern];
+        offset = vec2<u32>(offset_index % 2, offset_index / 2);
+    }
+    else if stride == 4 {
+        let offset_index = STRIDE_PATTERN_4[index_into_pattern];
+        offset = vec2<u32>(offset_index % 4, offset_index / 4);
+    }
+    else {
+        let tile_seed = init_rng(id.xy, rt_data.frame);
+        offset = vec2<u32>(
+            pcg_hash(tile_seed) % stride,
+            pcg_hash(tile_seed ^ 0x9e3779b9u) % stride
+        );
+    }
 
     let pixel = id.xy * stride + offset;
     if pixel.x >= dims.x || pixel.y >= dims.y {
@@ -61,7 +86,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 }
 
 fn generate_ray(pixel: vec2<u32>, resolution: vec2<f32>, jitter: vec2<f32>) -> Ray {
-    let uv = (vec2<f32>(pixel) + vec2<f32>(0.5)) / resolution;
+    let uv = (vec2<f32>(pixel) + jitter) / resolution;
 
     let ndc = vec2<f32>(
         uv.x * 2.0 - 1.0,
@@ -108,6 +133,7 @@ fn raytrace(ray: Ray) -> vec3<f32> {
     }
 
     let face = faces[closest_face_index];
+    hit_normal = interpolated_normal(face, closest_hit.weights);
 
     let light = rt_data.light_position;
     let to_light = light - closest_hit.point;
