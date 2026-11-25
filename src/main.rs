@@ -13,7 +13,7 @@ mod scene;
 
 fn main() {
     let faces =
-        ObjLoader::load_from_file("../Scenes/Bunny/Bunny.obj").expect("Failed to load Scene file");
+        ObjLoader::load_from_file("./scenes/Bunny/Bunny.obj").expect("Failed to load Scene file");
     let bvh = BvhNode::build(faces);
     let (gpu_bvh, faces) = bvh.flatten();
 
