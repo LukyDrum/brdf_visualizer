@@ -22,6 +22,7 @@ pub struct RendererState {
     faces_buffer: wgpu::Buffer,
     accum_buffer: wgpu::Buffer,
     brdf_buffer: wgpu::Buffer,
+    bvh_buffer: wgpu::Buffer,
 }
 
 #[repr(C)]
@@ -111,6 +112,12 @@ impl GpuState {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
+        let bvh_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("BVH Buffer"),
+            contents: bytemuck::cast_slice(&scene.gpu_bvh),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
         let compute_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Compute BGL"),
             entries: &[
@@ -174,6 +181,16 @@ impl GpuState {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -199,6 +216,7 @@ impl GpuState {
             &camera_buffer,
             &faces_buffer,
             &brdf_buffer,
+            &bvh_buffer,
             surface_config.width,
             surface_config.height,
         );
@@ -279,6 +297,7 @@ impl GpuState {
                 faces_buffer,
                 accum_buffer,
                 brdf_buffer,
+                bvh_buffer,
             },
         }
     }
@@ -291,6 +310,7 @@ impl GpuState {
         camera_uniform_buffer: &wgpu::Buffer,
         triangles_buffer: &wgpu::Buffer,
         brdf_buffer: &wgpu::Buffer,
+        bvh_buffer: &wgpu::Buffer,
         width: u32,
         height: u32,
     ) -> (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroup) {
@@ -345,6 +365,10 @@ impl GpuState {
                     binding: 5,
                     resource: brdf_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: bvh_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -376,6 +400,7 @@ impl GpuState {
             &self.renderer.camera_buffer,
             &self.renderer.faces_buffer,
             &self.renderer.brdf_buffer,
+            &self.renderer.bvh_buffer,
             new_size.width,
             new_size.height,
         );

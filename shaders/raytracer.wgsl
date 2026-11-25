@@ -17,12 +17,20 @@ struct Camera {
     up: vec4<f32>,
 };
 
+struct BvhNode {
+    aabb_min: vec3<f32>,
+    left_first: u32,
+    aabb_max: vec3<f32>,
+    tri_count: u32,
+};
+
 @group(0) @binding(0) var<uniform> rt_data: RtData;
 @group(0) @binding(1) var<uniform> camera: Camera;
 @group(0) @binding(2) var output_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(3) var<storage, read> faces: array<Face>;
 @group(0) @binding(4) var<storage, read_write> accum_buffer: array<vec4<f32>>;
 @group(0) @binding(5) var<storage, read> brdf_data: array<f32>;
+@group(0) @binding(6) var<storage, read> bvh_nodes: array<BvhNode>;
 
 override wg_x: u32 = 8u;
 override wg_y: u32 = 8u;
@@ -115,18 +123,10 @@ fn trace_path(initial_ray: Ray, rng: ptr<function, u32>) -> vec3<f32> {
     let face_count = arrayLength(&faces);
 
     for (var bounce = 0u; bounce < MAX_BOUNCES; bounce++) {
-        var closest_hit = NO_RAY_HIT;
         var closest_face_index = 0u;
+        var closest_hit = trace_bvh(ray, &closest_face_index);
 
-        for (var i = 0u; i < face_count; i++) {
-            let hit = ray_face_hit(ray, faces[i]);
-            if hit.is_hit && hit.distance > 1e-4 && hit.distance < closest_hit.distance {
-                closest_hit = hit;
-                closest_face_index = i;
-            }
-        }
-
-        // 2. Ray missed scene -> accumulate sky light and terminate path
+        // Ray missed
         if !closest_hit.is_hit {
             radiance += throughput * SKY_COLOR;
             break;
@@ -138,7 +138,7 @@ fn trace_path(initial_ray: Ray, rng: ptr<function, u32>) -> vec3<f32> {
             hit_normal = -hit_normal;
         }
 
-        // Offset ray origins along geometric normal to avoid self-intersection
+        // Offset ray origins to avoid self-intersection
         let geom_normal = normalize(cross(face.v1.xyz - face.v0.xyz, face.v2.xyz - face.v0.xyz));
         let face_forward_geom = select(-geom_normal, geom_normal, dot(geom_normal, hit_normal) > 0.0);
         let safe_origin = closest_hit.point + face_forward_geom * 1e-4;
@@ -147,7 +147,7 @@ fn trace_path(initial_ray: Ray, rng: ptr<function, u32>) -> vec3<f32> {
         let frame = make_tangent_frame(hit_normal, vec3<f32>(1.0, 0.0, 0.0));
         let sph_v = dir_to_spherical(view_dir, frame);
 
-        // 3. Direct lighting from point light (Next Event Estimation)
+        // Direct light
         let to_light = rt_data.light_position - closest_hit.point;
         let light_dist = length(to_light);
         let to_light_dir = to_light / light_dist;
@@ -166,7 +166,7 @@ fn trace_path(initial_ray: Ray, rng: ptr<function, u32>) -> vec3<f32> {
             radiance += direct;
         }
 
-        // 4. Sample random hemisphere bounce and update path throughput
+        // Choose random bounce in hemishpere
         let bounce_dir = sample_cosine_hemisphere(rand_f32(rng), rand_f32(rng), frame);
         if dot(face_forward_geom, bounce_dir) <= 0.0 {
             break;
@@ -177,7 +177,7 @@ fn trace_path(initial_ray: Ray, rng: ptr<function, u32>) -> vec3<f32> {
 
         throughput *= min(fr_bounce * PI, vec3<f32>(1.0));
 
-        // 5. Russian roulette path termination after 2 bounces
+        // Russian roullete based on throughput
         if bounce >= 2u {
             let survive_prob = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.05, 0.95);
             if rand_f32(rng) > survive_prob {
@@ -213,4 +213,79 @@ fn aces_tonemap(x: vec3<f32>) -> vec3<f32> {
     let d = 0.59;
     let e = 0.14;
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// Branchless slab test: returns distance to AABB entry, or 1e30 if missed
+fn intersect_aabb(ray_origin: vec3<f32>, inv_dir: vec3<f32>, bmin: vec3<f32>, bmax: vec3<f32>, max_dist: f32) -> f32 {
+    let t0 = (bmin - ray_origin) * inv_dir;
+    let t1 = (bmax - ray_origin) * inv_dir;
+    let tmin = min(t0, t1);
+    let tmax = max(t0, t1);
+
+    let t_enter = max(max(tmin.x, tmin.y), max(tmin.z, 0.0));
+    let t_exit  = min(min(tmax.x, tmax.y), min(tmax.z, max_dist));
+
+    return select(1e30, t_enter, t_enter <= t_exit);
+}
+
+fn trace_bvh(ray: Ray, out_face_idx: ptr<function, u32>) -> RayFaceHit {
+    var closest_hit = NO_RAY_HIT;
+    let inv_dir = 1.0 / ray.direction;
+
+    var stack: array<u32, 32>;
+    var stack_ptr = 0u;
+    var node_idx = 0u;
+
+    loop {
+        let node = bvh_nodes[node_idx];
+
+        if node.tri_count > 0u {
+            // Leaf node: test the contiguous slice of faces
+            let end = node.left_first + node.tri_count;
+            for (var i = node.left_first; i < end; i++) {
+                let hit = ray_face_hit(ray, faces[i]);
+                if hit.is_hit && hit.distance > 1e-4 && hit.distance < closest_hit.distance {
+                    closest_hit = hit;
+                    *out_face_idx = i;
+                }
+            }
+            if stack_ptr == 0u { break; }
+            stack_ptr -= 1u;
+            node_idx = stack[stack_ptr];
+        } else {
+            // Internal node: test both children and visit the closer one first
+            let left_idx = node_idx + 1u;
+            let right_idx = node.left_first;
+
+            let dist_l = intersect_aabb(ray.origin, inv_dir, bvh_nodes[left_idx].aabb_min, bvh_nodes[left_idx].aabb_max, closest_hit.distance);
+            let dist_r = intersect_aabb(ray.origin, inv_dir, bvh_nodes[right_idx].aabb_min, bvh_nodes[right_idx].aabb_max, closest_hit.distance);
+
+            var near_idx = left_idx;
+            var far_idx = right_idx;
+            var dist_near = dist_l;
+            var dist_far = dist_r;
+
+            if dist_r < dist_l {
+                near_idx = right_idx;
+                far_idx = left_idx;
+                dist_near = dist_r;
+                dist_far = dist_l;
+            }
+
+            if dist_near >= closest_hit.distance {
+                // Missed both boxes
+                if stack_ptr == 0u { break; }
+                stack_ptr -= 1u;
+                node_idx = stack[stack_ptr];
+            } else {
+                node_idx = near_idx;
+                if dist_far < closest_hit.distance {
+                    stack[stack_ptr] = far_idx;
+                    stack_ptr += 1u;
+                }
+            }
+        }
+    }
+
+    return closest_hit;
 }
